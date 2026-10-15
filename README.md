@@ -36,6 +36,7 @@ $env:OPENAI_API_KEY = Read-Host 'OpenAI API key' -MaskInput
 `GET /api/health` 的 `draft_mode` 会显示当前模式。密钥只留在后端进程环境变量，不写入代码或浏览器；不要提交 `.env`。配置了其中一项却漏掉另一项时，生成接口会返回配置错误，不会偷偷切回离线草稿。模型请求会发送**合成工单内容**到 OpenAI API，可能产生费用；项目未在真实 API 密钥下做过在线验收。
 
 从前端视角理解这一步，请看[第 1 课：模型工具调用](docs/lesson_01_tool_calling.md)。
+如果想先弄清页面按钮背后的数据流，请按[第 2 课：从点击到草稿](docs/lesson_02_data_flow.md)操作，无需模型密钥。
 
 ## 验证
 

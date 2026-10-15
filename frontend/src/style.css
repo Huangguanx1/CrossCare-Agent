@@ -4,3 +4,4 @@
 .workflow b{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#dceeed;color:#17666f;font-size:11px}
 .workflow i{color:#91aaae;font-style:normal}
 @media(max-width:720px){.workflow{padding:0 17px;gap:8px;margin-bottom:18px;font-size:11px}.workflow b{width:19px;height:19px}.workspace-heading p{line-height:1.5}}
+.evidence-explainer{margin:0 0 14px;color:#5f777b;font-size:12px;line-height:1.6}

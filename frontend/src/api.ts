@@ -7,7 +7,7 @@ export interface TicketListItem {
 }
 
 export interface Citation { id: string; title: string; version: string }
-export interface ToolResult { tool: string; order_id: string; found?: boolean; events?: { event_time: string; status: string; description: string }[] }
+export interface ToolResult { tool: string; order_id: string; found?: boolean; status?: string; sku?: string; market?: string; events?: { event_time: string; status: string; description: string }[] }
 export interface Draft {
   reply_text: string
   rationale: string

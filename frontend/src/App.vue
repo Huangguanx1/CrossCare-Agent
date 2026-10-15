@@ -10,6 +10,13 @@ const busy = ref(false)
 const error = ref('')
 const draftMode = ref('')
 const modeText = computed(() => ({ offline_rules: '离线规则演示', openai_tool_calling: '模型工具调用', misconfigured: '模型配置不完整' })[draftMode.value] || '模式加载中')
+const toolText: Record<string, string> = { get_order_summary: '核对订单归属', get_tracking_events: '查询物流记录' }
+const riskText: Record<string, string> = {
+  order_not_verified_for_customer: '订单不属于当前客户或无法核实',
+  order_not_in_ticket: '查询的订单号与工单不一致',
+  order_not_checked: '未完成订单校验',
+  policy_evidence_missing: '未找到适用政策',
+}
 const statusText: Record<string, string> = {
   new: '未处理', needs_review: '待审核', approved_demo_only: '已批准（仅演示）', rejected: '已退回',
 }
@@ -96,12 +103,13 @@ onMounted(async () => {
           <div class="customer-message"><span class="message-label">客户原话</span><p>{{ selected.message }}</p></div>
           <div class="section-heading evidence-title"><h3>订单、物流与政策依据</h3><span v-if="selected.draft">{{ selected.draft.mode === 'offline_rules' ? '离线规则草稿' : '模型工具调用草稿' }}</span></div>
           <template v-if="selected.draft">
-            <div v-if="selected.draft.risk_flags.length" class="risk-box"><strong>需要人工核对</strong><span v-for="flag in selected.draft.risk_flags" :key="flag">{{ flag }}</span></div>
+            <p class="evidence-explainer">{{ selected.draft.mode === 'offline_rules' ? '本次由后端规则依次执行只读查询。' : '本次由模型提出工具请求，后端核验权限后执行只读查询。' }}下方是实际查询结果，客服应据此审核草稿。</p>
+            <div v-if="selected.draft.risk_flags.length" class="risk-box"><strong>需要人工核对</strong><span v-for="flag in selected.draft.risk_flags" :key="flag">{{ riskText[flag] || flag }}</span></div>
             <div v-for="tool in selected.draft.tool_results" :key="tool.tool" class="evidence-card">
-              <span class="evidence-type">只读工具</span><strong>{{ tool.tool }}</strong>
+              <span class="evidence-type">只读工具 · {{ tool.tool }}</span><strong>{{ toolText[tool.tool] || tool.tool }}</strong>
               <p v-if="tool.found === false">当前客户无法验证此订单。未返回订单内容。</p>
               <template v-else-if="tool.events"><p v-for="event in tool.events" :key="event.event_time">{{ event.event_time.slice(0, 10) }} · {{ event.description }}</p></template>
-              <p v-else>订单 {{ tool.order_id }} 已通过客户归属校验。</p>
+              <p v-else>订单 {{ tool.order_id }} 已通过客户归属校验<template v-if="tool.status">；状态：{{ tool.status }}；商品 SKU：{{ tool.sku }}；市场：{{ tool.market }}</template>。</p>
             </div>
             <div v-for="citation in selected.draft.citations" :key="citation.id" class="evidence-card policy"><span class="evidence-type">政策依据</span><strong>{{ citation.title }}</strong><p>{{ citation.id }} · {{ citation.version }}</p></div>
             <p v-if="!selected.draft.citations.length && !selected.draft.risk_flags.length" class="muted">没有匹配的政策依据。</p>

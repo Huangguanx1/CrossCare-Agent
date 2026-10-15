@@ -46,6 +46,13 @@ class CrossCareFlowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["citations"][0]["version"], "v1")
 
+    def test_order_evidence_shows_status_only_after_ownership_check(self):
+        valid = self.client.post("/api/tickets/T-1001/draft").json()["tool_results"][0]
+        blocked = self.client.post("/api/tickets/T-1003/draft").json()["tool_results"][0]
+        self.assertEqual(valid["status"], "in_transit")
+        self.assertEqual(valid["sku"], "BAG-01")
+        self.assertEqual(blocked, {"tool": "get_order_summary", "order_id": "ORD-1002", "found": False})
+
     def test_human_review_never_sends_external_message(self):
         self.assertEqual(self.client.post("/api/tickets/T-1001/review", json={"action": "approve"}).status_code, 409)
         self.client.post("/api/tickets/T-1001/draft")

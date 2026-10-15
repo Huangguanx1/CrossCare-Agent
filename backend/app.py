@@ -175,7 +175,8 @@ def draft_for_ticket(conn: sqlite3.Connection, ticket_id: str) -> dict:
     tools: list[dict] = []
     risks: list[str] = []
     if ticket["order_id"]:
-        tools.append({"tool": "get_order_summary", "order_id": ticket["order_id"], "found": bool(order)})
+        tools.append({"tool": "get_order_summary", "order_id": ticket["order_id"], "found": bool(order),
+                      **({"status": order["status"], "sku": order["sku"], "market": order["market"]} if order else {})})
         if not order:
             risks.append("order_not_verified_for_customer")
     events = tracking_for_customer(conn, order["id"], ticket["customer_id"]) if order else []
