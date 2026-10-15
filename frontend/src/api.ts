@@ -26,6 +26,7 @@ export interface Ticket extends TicketListItem {
   order_id: string | null
   draft: Draft | null
 }
+export interface Health { status: string; demo_data: boolean; draft_mode: string }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, options)
@@ -37,6 +38,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const listTickets = () => request<TicketListItem[]>('/tickets')
+export const getHealth = () => request<Health>('/health')
 export const getTicket = (id: string) => request<Ticket>(`/tickets/${encodeURIComponent(id)}`)
 export const generateDraft = (id: string) => request<Draft>(`/tickets/${encodeURIComponent(id)}/draft`, { method: 'POST' })
 export const reviewDraft = (id: string, action: 'approve' | 'reject', edited_reply: string, note: string) =>
