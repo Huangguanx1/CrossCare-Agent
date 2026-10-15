@@ -85,7 +85,7 @@ onMounted(async () => {
           <h2>{{ selected.subject }}</h2>
           <div class="case-meta"><span>{{ selected.customer_name }}</span><span>{{ selected.market }} 市场</span><span>{{ selected.order_id || '无订单号' }}</span></div>
           <div class="customer-message"><span class="message-label">客户原话</span><p>{{ selected.message }}</p></div>
-          <div class="section-heading evidence-title"><h3>核对依据</h3><span v-if="selected.draft">{{ selected.draft.mode === 'offline_rules' ? '离线规则草稿' : selected.draft.mode }}</span></div>
+          <div class="section-heading evidence-title"><h3>核对依据</h3><span v-if="selected.draft">{{ selected.draft.mode === 'offline_rules' ? '离线规则草稿' : '模型工具调用草稿' }}</span></div>
           <template v-if="selected.draft">
             <div v-if="selected.draft.risk_flags.length" class="risk-box"><strong>需要人工核对</strong><span v-for="flag in selected.draft.risk_flags" :key="flag">{{ flag }}</span></div>
             <div v-for="tool in selected.draft.tool_results" :key="tool.tool" class="evidence-card">

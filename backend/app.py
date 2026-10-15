@@ -17,6 +17,8 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.model_agent import ModelAgentError, call_openai, run_tool_loop
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "crosscare.sqlite3"
@@ -142,6 +144,25 @@ def search_policies(conn: sqlite3.Connection, query: str, market: str, sku: str 
     return [dict(row) for row in rows]
 
 
+def save_draft(conn: sqlite3.Connection, ticket_id: str, reply: str, rationale: str,
+               citations: list[dict], tools: list[dict], risks: list[str], mode: str) -> dict:
+    created_at = now()
+    conn.execute(
+        """INSERT INTO drafts(ticket_id,reply_text,rationale,citations_json,tool_results_json,risk_flags_json,mode,created_at)
+           VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ticket_id) DO UPDATE SET
+           reply_text=excluded.reply_text,rationale=excluded.rationale,
+           citations_json=excluded.citations_json,tool_results_json=excluded.tool_results_json,
+           risk_flags_json=excluded.risk_flags_json,mode=excluded.mode,
+           created_at=excluded.created_at,reviewed_at=NULL,review_note=NULL""",
+        (ticket_id, reply, rationale, json.dumps(citations), json.dumps(tools), json.dumps(risks), mode, created_at),
+    )
+    conn.execute("UPDATE tickets SET status='needs_review' WHERE id=?", (ticket_id,))
+    conn.commit()
+    return {"ticket_id": ticket_id, "reply_text": reply, "rationale": rationale,
+            "citations": citations, "tool_results": tools, "risk_flags": risks,
+            "mode": mode, "created_at": created_at}
+
+
 def draft_for_ticket(conn: sqlite3.Connection, ticket_id: str) -> dict:
     ticket = conn.execute(
         """SELECT t.*, c.market AS customer_market FROM tickets t
@@ -180,21 +201,89 @@ def draft_for_ticket(conn: sqlite3.Connection, ticket_id: str) -> dict:
     else:
         reply = f"Our current policy says: {policies[0]['body']} A support specialist will review your request." if policies else "A support specialist will check the applicable policy and get back to you."
         rationale = "一般政策问题；请核对适用市场和政策版本。"
-    created_at = now()
-    conn.execute(
-        """INSERT INTO drafts(ticket_id,reply_text,rationale,citations_json,tool_results_json,risk_flags_json,mode,created_at)
-           VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ticket_id) DO UPDATE SET
-           reply_text=excluded.reply_text,rationale=excluded.rationale,
-           citations_json=excluded.citations_json,tool_results_json=excluded.tool_results_json,
-           risk_flags_json=excluded.risk_flags_json,mode=excluded.mode,
-           created_at=excluded.created_at,reviewed_at=NULL,review_note=NULL""",
-        (ticket_id, reply, rationale, json.dumps(citations), json.dumps(tools), json.dumps(risks), "offline_rules", created_at),
+    return save_draft(conn, ticket_id, reply, rationale, citations, tools, risks, "offline_rules")
+
+
+class ModelDraft(BaseModel):
+    reply_text: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=1000)
+
+
+def model_draft_for_ticket(conn: sqlite3.Connection, ticket_id: str, request_model=call_openai) -> dict:
+    ticket = conn.execute(
+        """SELECT t.*, c.market AS customer_market FROM tickets t
+           JOIN customers c ON c.id=t.customer_id WHERE t.id=?""", (ticket_id,)
+    ).fetchone()
+    if not ticket:
+        raise KeyError(ticket_id)
+    ticket = dict(ticket)
+    tool_results: list[dict] = []
+    citations: dict[str, dict] = {}
+    risks: list[str] = []
+
+    def flag(name: str) -> None:
+        if name not in risks:
+            risks.append(name)
+
+    def execute_tool(name: str, args: dict) -> dict:
+        if name in ("get_order_summary", "get_tracking_events"):
+            order_id = args.get("order_id")
+            if not isinstance(order_id, str) or order_id != ticket["order_id"]:
+                flag("order_not_in_ticket")
+                result = {"tool": name, "order_id": str(order_id), "found": False}
+            else:
+                order = order_for_customer(conn, order_id, ticket["customer_id"])
+                if not order:
+                    flag("order_not_verified_for_customer")
+                    result = {"tool": name, "order_id": order_id, "found": False}
+                elif name == "get_order_summary":
+                    result = {"tool": name, "order_id": order_id, "found": True,
+                              "status": order["status"], "sku": order["sku"], "market": order["market"]}
+                else:
+                    result = {"tool": name, "order_id": order_id, "found": True,
+                              "events": tracking_for_customer(conn, order_id, ticket["customer_id"])}
+            tool_results.append(result)
+            return result
+        if name == "search_policies":
+            query = args.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 300:
+                raise ModelAgentError("Invalid policy query")
+            order = order_for_customer(conn, ticket["order_id"], ticket["customer_id"]) if ticket["order_id"] else None
+            market = order["market"] if order else ticket["customer_market"]
+            policies = search_policies(conn, query, market, order["sku"] if order else "*")
+            for policy in policies:
+                citations[policy["id"]] = {"id": policy["id"], "title": policy["title"],
+                                           "version": policy["version"]}
+            if not policies:
+                flag("policy_evidence_missing")
+            return {"policies": [{"id": p["id"], "title": p["title"], "version": p["version"],
+                                   "body": p["body"]} for p in policies]}
+        raise ModelAgentError("Unknown tool")
+
+    proposal, used = run_tool_loop(
+        {"ticket_id": ticket["id"], "subject": ticket["subject"], "message": ticket["message"],
+         "order_id": ticket["order_id"], "market": ticket["customer_market"]},
+        execute_tool, request_model,
     )
-    conn.execute("UPDATE tickets SET status='needs_review' WHERE id=?", (ticket_id,))
-    conn.commit()
-    return {"ticket_id": ticket_id, "reply_text": reply, "rationale": rationale,
-            "citations": citations, "tool_results": tools, "risk_flags": risks,
-            "mode": "offline_rules", "created_at": created_at}
+    if not used:
+        raise ModelAgentError("Model skipped evidence tools")
+    try:
+        draft = ModelDraft.model_validate(proposal)
+        if not draft.reply_text.strip() or not draft.rationale.strip():
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ModelAgentError("Model returned an invalid draft") from None
+
+    reply, rationale = draft.reply_text.strip(), draft.rationale.strip()
+    if ticket["order_id"] and "get_order_summary" not in used:
+        flag("order_not_checked")
+    if any(risk in risks for risk in ("order_not_verified_for_customer", "order_not_in_ticket", "order_not_checked")):
+        reply = "I couldn't verify that order for this account. A support specialist will help confirm the details before we share any order information."
+        rationale = "订单未通过当前工单的归属校验；未披露订单信息。"
+        citations.clear()
+        tool_results = [result for result in tool_results if result.get("found") is False]
+    return save_draft(conn, ticket_id, reply, rationale, list(citations.values()),
+                      tool_results, risks, "openai_tool_calling")
 
 
 class ReviewInput(BaseModel):
@@ -203,14 +292,21 @@ class ReviewInput(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
-def create_app(db_path: Path | None = None) -> FastAPI:
+def draft_mode() -> str:
+    key, model = bool(os.getenv("OPENAI_API_KEY")), bool(os.getenv("CROSSCARE_MODEL"))
+    if key != model:
+        return "misconfigured"
+    return "openai_tool_calling" if key else "offline_rules"
+
+
+def create_app(db_path: Path | None = None, request_model=None) -> FastAPI:
     db_path = Path(db_path or os.environ.get("CROSSCARE_DB", DEFAULT_DB))
     init_db(db_path)
-    app = FastAPI(title="CrossCare Agent — synthetic demo", version="0.1.0")
+    app = FastAPI(title="CrossCare Agent — synthetic demo", version="0.2.0")
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "demo_data": True, "draft_mode": "offline_rules"}
+        return {"status": "ok", "demo_data": True, "draft_mode": draft_mode()}
 
     @app.get("/api/tickets")
     def list_tickets():
@@ -241,11 +337,17 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/tickets/{ticket_id}/draft")
     def generate_draft(ticket_id: str):
+        mode = draft_mode()
+        if mode == "misconfigured":
+            raise HTTPException(503, "Set both OPENAI_API_KEY and CROSSCARE_MODEL, or neither")
         with closing(connect(db_path)) as conn:
             try:
-                return draft_for_ticket(conn, ticket_id)
+                return (model_draft_for_ticket(conn, ticket_id, request_model or call_openai)
+                        if mode == "openai_tool_calling" else draft_for_ticket(conn, ticket_id))
             except KeyError:
                 raise HTTPException(404, "Ticket not found") from None
+            except ModelAgentError as error:
+                raise HTTPException(502, str(error)) from None
 
     @app.post("/api/tickets/{ticket_id}/review")
     def review(ticket_id: str, payload: ReviewInput):
